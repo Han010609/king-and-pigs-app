@@ -9,6 +9,7 @@ export default class Pig extends Phaser.GameObjects.Sprite {
     this.anims.play({ key: 'Pig-Idle', repeat: -1 });
     this.body.setDragX(scene.airDrag ? scene.airDrag * 1 : 100);
     this.isDead = false;
+    this.edgeSeekDirection = 0; // 初始化邊緣搜尋方向
     // AI 狀態機
     this.aiState = 'patrol'; // patrol(巡邏), engage(交戰), return(返回)
     
@@ -170,7 +171,7 @@ export default class Pig extends Phaser.GameObjects.Sprite {
         // 檢查是否回到巡邏區域
         const distanceFromCenter = Math.abs(this.x - this.patrolCenterX);
         if (distanceFromCenter < 50) {
-          console.log(`[豬豬] 狀態轉換: ${previousState} → patrol (已返回巡邏區域)`);
+        //   console.log(`[豬豬] 狀態轉換: ${previousState} → patrol (已返回巡邏區域)`);
           this.aiState = 'patrol';
           this.patrolStartTime = 0; // 重置巡邏時間
         }
@@ -186,7 +187,7 @@ export default class Pig extends Phaser.GameObjects.Sprite {
   }
 
   // 檢測前方是否會掉落（使用 tilemap 物理檢測）
-  checkWillFall() {
+  checkWillFall(checkDirection) {
     if (!this.body.onFloor()) {
       return false; // 已經在空中，不需要檢測
     }
@@ -196,9 +197,11 @@ export default class Pig extends Phaser.GameObjects.Sprite {
       return false;
     }
 
+    const direction = checkDirection || this.patrolDirection;
+
     // 檢測前方，只要有 1px 可以接觸地板就不會掉落
     const checkDistance = 12; // 檢測前方距離
-    const checkX = this.x + (this.patrolDirection * checkDistance);
+    const checkX = this.x + (direction * checkDistance);
     const checkY = this.y + (this.body.height / 2) + 5; // 底部稍微下方一點
 
     // 將世界座標轉換為 tile 座標
@@ -298,28 +301,50 @@ export default class Pig extends Phaser.GameObjects.Sprite {
     if (!this.target) return;
 
     const targetX = this.target.x;
-    let direction = targetX > this.x ? 1 : -1;
     const distance = Math.abs(targetX - this.x);
+    // 高度判定：Target.y > This.y 表示 Target 在下方 (Phaser Y 軸向下增加)
+    // 且高度差大於一定值才算在下方 (例如 40px)
+    const isTargetBelow = (this.target.y - this.y) > 40; 
+    
+    // 1. 防抖動：如果水平距離很近且不需要找路下樓，就停下來
+    // 這是為了解決豬豬在與國王 X 軸重合時左右抽搐的問題
+    // if (distance < 10 && !isTargetBelow) {
+    //   this.body.setVelocityX(0);
+    //   if (this.body.onFloor()) {
+    //      this.anims.play('Pig-Idle', true);
+    //   }
+    //   return;
+    // }
 
-    // 獲取地圖邊界
-    const worldBounds = this.scene.physics.world.bounds;
-    const bodyHalfWidth = this.body.width / 2;
-    const leftBound = worldBounds.x + bodyHalfWidth;
-    const rightBound = worldBounds.width - bodyHalfWidth;
-    
-    // 檢測是否到達地圖邊界
-    const isAtLeftBound = this.x <= leftBound;
-    const isAtRightBound = this.x >= rightBound;
-    
-    // 如果追擊方向會導致超出地圖邊界，停止追擊
-    if ((direction > 0 && isAtRightBound) || (direction < 0 && isAtLeftBound)) {
-      const boundarySide = isAtRightBound ? '右' : '左';
-      // console.log(`[豬豬] 追擊: 到達地圖${boundarySide}邊界 (x: ${this.x.toFixed(0)}), 停止追擊`);
-      // this.body.setVelocityX(0);
-      if (this.body.onFloor()) {
-        // this.anims.play('Pig-Idle', true);
-      }
-      // return;
+    let direction = targetX > this.x ? 1 : -1;
+
+    // 2. Edge Seek 模式：目標在下方且水平距離很近
+    // 豬豬會嘗試往一個方向走，直到掉下去 (尋找邊緣)
+    // 條件：目標在下方，且水平距離足夠近 (表示已經走到目標上方了)
+    if (isTargetBelow && distance < 100 && this.body.onFloor()) {
+        // 如果還沒決定尋找方向，初始化方向
+        if (this.edgeSeekDirection === 0) {
+            // 優先保持當前移動方向，如果是靜止就根據面向決定
+            if (Math.abs(this.body.velocity.x) > 10) {
+               this.edgeSeekDirection = this.body.velocity.x > 0 ? 1 : -1;
+            } else {
+               this.edgeSeekDirection = this.flipX ? 1 : -1;
+            }
+        }
+
+        // 檢查是否撞牆，撞牆就反向搜尋
+        if ((this.edgeSeekDirection > 0 && this.body.blocked.right) || 
+            (this.edgeSeekDirection < 0 && this.body.blocked.left)) {
+            this.edgeSeekDirection *= -1;
+            // 短暫等待避免立即再次反向? 目前先直接反向
+        }
+        
+        // 強制設定為搜尋方向
+        direction = this.edgeSeekDirection;
+        console.log(`[豬豬] 尋找邊緣下樓: 方向 ${direction}`);
+    } else {
+        // 非 Edge Seek 模式 (例如已經掉下去了，或者距離拉開了)，重置搜尋方向
+        this.edgeSeekDirection = 0;
     }
 
     // 設定移動方向（反轉：spritesheet 預設是向左的）
@@ -327,8 +352,15 @@ export default class Pig extends Phaser.GameObjects.Sprite {
 
     // 如果在地面上，移動
     if (this.body.onFloor()) {
-      this.body.setVelocityX(this.chaseSpeed * direction);
-      this.anims.play('Pig-Run', true);
+      // 只有在非 Edge Seek 模式下才檢查是否會掉落
+      // 如果 checkWillFall 返回 true (會掉落)，且目標不在下方(非 Edge Seek)，則停止移動
+      if (!isTargetBelow && this.checkWillFall(direction)) {
+         this.body.setVelocityX(0);
+         this.anims.play('Pig-Idle', true);
+      } else {
+         this.body.setVelocityX(this.chaseSpeed * direction);
+         this.anims.play('Pig-Run', true);
+      }
     } else {
       // 在空中時也持續設定水平速度，確保跳躍時能水平移動到平台
       this.body.setVelocityX(this.chaseSpeed * direction);
@@ -338,12 +370,16 @@ export default class Pig extends Phaser.GameObjects.Sprite {
     // 1. 目標在較高位置（高度差超過攻擊範圍）
     // 2. 目標在攻擊範圍內但高度太高無法攻擊（需要跳躍才能攻擊）
     // 3. 目標在較高位置且距離較近（追擊高處目標）
-    const heightDiff = this.y - this.target.y; // 高度差（正值表示目標在下方，負值表示目標在上方）
+    
+    // 注意：如果是 Edge Seek 模式 (isTargetBelow)，target.y > this.y，所以 heightDiff 為負值
+    // 下面的 heightDiff 計算的是 this.y - target.y (正值表示目標在上方，負值表示目標在下方)
+    const heightDiff = this.y - this.target.y; 
 
     const targetAboveAndClose = this.target.y < this.y - 20 && distance < 120; // 目標在上方且距離較近
     
-    if (this.body.onFloor() && !this.isJumping && targetAboveAndClose && heightDiff > 0) {
-      console.log(`[豬豬] 追擊: 跳躍追擊目標 (距離: ${distance.toFixed(0)}px, 高度差: ${heightDiff.toFixed(0)}px, 原因: ${'攻擊範圍內但高度不夠'})`);
+    // 增加 !isTargetBelow 判斷，避免在尋找邊緣時誤跳
+    if (this.body.onFloor() && !this.isJumping && targetAboveAndClose && heightDiff > 0 && !isTargetBelow) {
+      console.log(`[豬豬] 追擊: 跳躍追擊目標 (距離: ${distance.toFixed(0)}px, 高度差: ${heightDiff.toFixed(0)}px)`);
       // 設定垂直速度（跳躍）
       this.body.setVelocityY(this.initialJumpPower);
       // 確保跳躍時有水平速度，這樣才能跳到平台上
@@ -374,28 +410,14 @@ export default class Pig extends Phaser.GameObjects.Sprite {
 
     // 執行攻擊（只能在地面，有衝擊效果）
     if (!this.isAttacking && this.body.onFloor()) {
-      // 獲取地圖邊界
-      const worldBounds = this.scene.physics.world.bounds;
-      const bodyHalfWidth = this.body.width / 2;
-      const leftBound = worldBounds.x + bodyHalfWidth;
-      const rightBound = worldBounds.width - bodyHalfWidth;
-      const isAtLeftBound = this.x <= leftBound;
-      const isAtRightBound = this.x >= rightBound;
-      
-      // 檢查是否會超出邊界
-      const wouldExceedBoundary = (direction > 0 && isAtRightBound) || (direction < 0 && isAtLeftBound);
+
       
       console.log(`[豬豬] 攻擊: 執行衝擊攻擊！距離: ${distance.toFixed(0)}px`);
       this.isAttacking = true;
       
       // 如果不會超出邊界，使用衝擊效果
-      if (!wouldExceedBoundary) {
-        // 使用 setVelocityX 產生衝擊效果，明顯往前衝
-        this.body.setVelocityX(direction > 0 ? 250 : -250);
-      } else {
-        // 會超出邊界，只停止移動
-        this.body.setVelocityX(0);
-      }
+      // 使用 setVelocityX 產生衝擊效果，明顯往前衝
+      this.body.setVelocityX(direction > 0 ? 250 : -250);
       
       this.anims.play('Pig-Attack', true);
       this.AttackZones.front.body.enable = true;
@@ -413,30 +435,6 @@ export default class Pig extends Phaser.GameObjects.Sprite {
     const targetX = this.target.x;
     const distance = Phaser.Math.Distance.Between(this.x, this.y, this.target.x, this.target.y);
     
-    // 獲取地圖邊界
-    const worldBounds = this.scene.physics.world.bounds;
-    const bodyHalfWidth = this.body.width / 2;
-    const leftBound = worldBounds.x + bodyHalfWidth;
-    const rightBound = worldBounds.width - bodyHalfWidth;
-    
-    // 檢測是否到達地圖邊界
-    const isAtLeftBound = this.x <= leftBound;
-    const isAtRightBound = this.x >= rightBound;
-    const isAtBoundary = isAtLeftBound || isAtRightBound;
-    
-    // 如果到達地圖邊界，停止後退
-    if (isAtBoundary) {
-      const boundarySide = isAtLeftBound ? '左' : '右';
-      console.log(`[豬豬] 後退: 到達地圖${boundarySide}邊界 (x: ${this.x.toFixed(0)}), 停止後退`);
-      this.body.setVelocityX(0);
-      if (this.body.onFloor()) {
-        this.anims.play('Pig-Idle', true);
-      }
-      // 重置後退時間
-      this.retreatStartTime = 0;
-      return;
-    }
-
     // 判斷距離狀態
     const isTooClose = distance < this.retreatDistance; // 太近，需要快速後退
     const isInSafeRange = distance >= this.retreatDistance && distance <= this.safeDistanceMax; // 安全範圍內
@@ -457,24 +455,14 @@ export default class Pig extends Phaser.GameObjects.Sprite {
       // 統一計算方向（使用局部變數避免同一幀內多次修改造成抖動）
       // 優先級：邊界檢查 > 國王靠近
       let direction = this.patrolDirection;
-      
-      // 優先級 1: 檢查是否會超出地圖邊界（最高優先級）
-      const wouldExceedLeft = this.x <= leftBound && direction < 0;
-      const wouldExceedRight = this.x >= rightBound && direction > 0;
-      if (wouldExceedLeft || wouldExceedRight) {
-        direction *= -1; // 反轉方向
-      }
+
       // 優先級 2: 檢查國王是否正在靠近
-      else {
-        const kingMovingTowardPig = (targetX > this.x && this.target.body.velocity.x < 0) || 
-                                     (targetX < this.x && this.target.body.velocity.x > 0);
-        if (kingMovingTowardPig && distance < this.safeDistanceMax * 0.8) {
-          const retreatDir = targetX < this.x ? 1 : -1;
-          // 確保不會超出邊界
-          if (!((retreatDir > 0 && isAtRightBound) || (retreatDir < 0 && isAtLeftBound))) {
-            direction = retreatDir;
-          }
-        }
+      const kingMovingTowardPig = (targetX > this.x && this.target.body.velocity.x < 0) || 
+                                   (targetX < this.x && this.target.body.velocity.x > 0);
+      if (kingMovingTowardPig && distance < this.safeDistanceMax * 0.8) {
+        const retreatDir = targetX < this.x ? 1 : -1;
+        // 確保不會超出邊界
+        direction = retreatDir;
       }
       
       // 只更新一次 patrolDirection（避免抖動）
@@ -500,16 +488,7 @@ export default class Pig extends Phaser.GameObjects.Sprite {
       // 計算遠離目標的方向（與目標相反的方向）
       let direction = targetX < this.x ? 1 : -1; // 目標在左邊，向右後退；目標在右邊，向左後退
       
-      // 如果後退方向會導致超出地圖邊界，則不後退
-      if ((direction > 0 && isAtRightBound) || (direction < 0 && isAtLeftBound)) {
-        console.log(`[豬豬] 後退: 後退方向會超出地圖邊界，停止後退`);
-        this.body.setVelocityX(0);
-        if (this.body.onFloor()) {
-          this.anims.play('Pig-Idle', true);
-        }
-        this.retreatStartTime = 0;
-        return;
-      }
+
 
       // 記錄開始後退的時間
       if (this.retreatStartTime === 0) {

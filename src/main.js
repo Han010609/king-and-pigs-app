@@ -32,7 +32,7 @@ const config = {
     default: 'arcade',
     arcade: {
       gravity: { y: 600 },
-      debug: true,
+      // debug: true,
     }
   },
   // scene 可以給陣列[scene1, scene2]來建立多個場景

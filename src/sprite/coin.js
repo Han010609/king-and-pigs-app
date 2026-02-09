@@ -10,6 +10,12 @@ export default class Coin extends Phaser.GameObjects.Sprite {
     this.anims.play({ key: 'Coin-Idle', repeat: -1 });
     this.body.setDragX(scene.airDrag ? scene.airDrag * 1 : 100);
     this.isCollected = false;
+
+    this.on('animationcomplete', (animation) => {
+      if (animation.key === 'Coin-Collect') {
+        this.destroy();
+      }
+    });
   }
 
   Collected() {

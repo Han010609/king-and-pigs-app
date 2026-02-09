@@ -35,8 +35,6 @@ export default class Game extends Phaser.Scene {
       classType: Coin,
     });
 
-
-
     // 生成豬豬（抽離成 Pig 類別）
     // this.pig = new Pig(this);
 
@@ -46,15 +44,25 @@ export default class Game extends Phaser.Scene {
     // 生成主角（放在 pig/coin 之後，避免 King 建構子引用未建立的物件）
     // this.king = new King(this);
 
+    this.hitCooldownMs = 400; // 停止碰撞的間隔（毫秒）
+
     // 碰撞與重疊設定
     this.physics.add.collider(this.king, colliderLayer);
     // 為每個 pig 設定碰撞
     this.pigs.forEach(pig => {
+      pig._kingHitCooldownUntil = 0;
       this.physics.add.collider(pig, colliderLayer);
-      // this.physics.add.collider(this.king, pig, (king, pig) => {
-      //   king.body.setVelocityX(0);
-      //   pig.body.setVelocityX(0);
-      // });
+      this.physics.add.collider(this.king, pig, (king, pig) => {
+      pig._kingHitCooldownUntil = this.time.now + this.hitCooldownMs;
+        // king.body.setVelocityX(0);
+        // pig.body.setVelocityX(0);
+      },
+      (king, pig) => {
+        // ✅ processCallback：回傳 true 才會做碰撞/分離，false 就不碰撞（像 overlap）
+        return this.time.now >= pig._kingHitCooldownUntil;
+      },
+      this
+    );
     });
 
     // 使用 king 實例上暴露的攻擊判定區域
@@ -87,7 +95,7 @@ export default class Game extends Phaser.Scene {
           !king.isDead
         ) {
           console.log('豬豬攻擊命中!');
-          king.dead();
+          // king.dead();
         }
       });
     });
